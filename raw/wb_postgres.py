@@ -2,82 +2,127 @@ import requests
 import json
 import psycopg2
 from datetime import date, timedelta
-from soup2dict import convert
-from bs4 import BeautifulSoup
+# from soup2dict import convert
+from airflow.hooks.base import BaseHook 
+from bs4 import BeautifulSoup, NavigableString
 
-def insert_data_count_feedbacks(clear_data):
-    conn = psycopg2.connect(dbname="postgres", user="postgres", password="password", host="127.0.0.1")
-    cursor = conn.cursor()
-
-    # Удаление данных за сегодня на всякий случай
-    delete_data(conn, cursor, 'public.count_feedbacks')
-
-    # Запись данных за сегодня
-    for product in clear_data:
-        cursor.execute(
-            """
-            INSERT INTO count_feedbacks (date, id, salePriceU, feedbacks)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (date.today(), product["id"], product["priceU"], product["feedbacks"])
-        )
-        
-    # выполняем транзакцию
-    try:
-        conn.commit() 
-        print(f'Данные count_feedbacks за {date.today()} успешно загружены')
-    except Exception as err:
-        conn.rollback() 
-        print(f"Данные count_feedbacks за {date.today()} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
-     
-    cursor.close()
-    conn.close()  
-
-def delete_data(conn, cursor, dbname):
+class WB_loader():
+    """
+    Загрузка данных из WB в таблицу public.count_feedbacks в Postgres
+    Аргументы: 
+        - (ds) дата запуска таски
+    """    
+    def __init__(self, ds):
+        self.query = 'Наклейки для творчества'
+        self.url = 'https://search.wb.ru/exactmatch/ru/common/v4/search?TestGroup=no_test&TestID=no_test&appType=1&curr=rub&dest=-1257786&query=' + self.query + '&resultset=catalog&sort=popular&spp=99&suppressSpellcheck=false'
+        self.connection = BaseHook.get_connection("POSTGRES_CONNECTION")
+        self.conn = psycopg2.connect(dbname=self.connection.schema, 
+                                     user=self.connection.login, 
+                                     password=self.connection.password, 
+                                     host=self.connection.host)
+        self.cursor = self.conn.cursor()
+        self.ds = ds
+        self.tries_max = 50
+    
+    def delete_data(self):
+        """
+        Удаление данных из public.count_feedbacks в случае, 
+        если запускаем таску на конкретную дату повторно
+        """ 
         try:
-            cursor.execute(
+            self.cursor.execute(
                 f"""
-                DELETE FROM {dbname}
+                DELETE FROM public.count_feedbacks
                 WHERE date = %s
                 """,
-                (date.today(),)
+                (self.ds,)
             )
-            conn.commit()
-            print(f'Данные {dbname} за {date.today()} успешно удалены')
+            self.conn.commit()
+            print(f'Данные public.count_feedbacks за {self.ds} успешно удалены')
         except Exception as err:
-            conn.rollback()
-            print(f"Данные {dbname} за {date.today()} не удалены, ошибка: {err=}, {type(err)=}")
+            self.conn.rollback()
+            print(f"Данные public.count_feedbacks за {self.ds} не удалены, ошибка: {err=}, {type(err)=}")
+    
+    def insert_data_count_feedbacks(self, clear_data):
+        """
+        Запись полученных очищенных данных в таблицу public.count_feedbacks
+        Аргументы: 
+            - (clear_data) очищенные отзывы, преобразованные в словарь
+        """ 
+        # Запись данных за сегодня
+        for product in clear_data:
+            self.cursor.execute(
+                """
+                INSERT INTO count_feedbacks (date, id, salePriceU, feedbacks)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (self.ds, product["id"], product["priceU"], product["feedbacks"])
+            )
+            
+        # выполняем транзакцию
+        try:
+            self.conn.commit() 
+            print(f'Данные count_feedbacks за {self.ds} успешно загружены')
+        except Exception as err:
+            self.conn.rollback() 
+            print(f"Данные count_feedbacks за {self.ds} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
+        
+        self.cursor.close()
+        self.conn.close()  
 
-def get_data_from_wb(request_url):
-    response = requests.get(request_url)
-
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, "html.parser")
-        clear_data = json.loads(convert(soup)['navigablestring'][0])['data']
-        if 'total' in clear_data.keys():
-            return clear_data['products']
+    def soup_to_dict(self, soup_obj):
+        """
+        Преобразование soup_obj в python словарь
+        Аргументы: 
+            - (soup_obj) объект BeautifulSoup, который будет преобразован в словарь
+        """ 
+        if isinstance(soup_obj, NavigableString):
+            return str(soup_obj)
         else:
-            return False
-    else:
-        print(f'Ошибка: {response.status_code} - {response.text}') 
-        return False 
-             
-def wb_postgres_loader():
-    query = 'Наклейки для творчества'
-    url = 'https://search.wb.ru/exactmatch/ru/common/v4/search?TestGroup=no_test&TestID=no_test&appType=1&curr=rub&dest=-1257786&query=' + query + '&resultset=catalog&sort=popular&spp=99&suppressSpellcheck=false'
-    tries_max = 20
-    tries_cur = 0
-    clear_data = get_data_from_wb(url)
+            result = {}
+            for tag in soup_obj.contents:
+                tag_name = tag.name
+                if tag_name is None:
+                    tag_name = 'navigablestring'
+                if tag_name not in result:
+                    result[tag_name] = []
+                result[tag_name].append(self.soup_to_dict(tag))
+            return result
 
-    # Пытаемся забрать данные
-    while not clear_data and tries_cur < tries_max:
-        clear_data = get_data_from_wb(url)
-        tries_cur += 1
+    def get_data_from_wb(self):
+        """
+        Единичное подключение и получение данных с WB.
+        Здесь есть проверка: актуальные данные только в том случае, 
+        когда возвращается total в резуультате запроса
+        """ 
+        response = requests.get(self.url)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            clear_data = json.loads(self.soup_to_dict(soup)['navigablestring'][0])['data']
+            if 'total' in clear_data.keys():
+                return clear_data['products']
+            else:
+                return False
+        else:
+            print(f'Ошибка: {response.status_code} - {response.text}') 
+            return False 
+                
+    def wb_postgres_loader(self):
+        """
+        Основная функция получаения данных с WB и заливки из в БД
+        """ 
+        tries_cur = 0
+        clear_data = self.get_data_from_wb()
 
-    # Если данные так и не забрали, пишем об этом. Иначе идет обработка данных
-    print(f'Попыток: {tries_cur}')
-    if not clear_data:
-        raise ValueError('Не получилось получить данные (больше 20 попыток)')
-    else:
-        insert_data_count_feedbacks(clear_data)
+        # Пытаемся забрать данные
+        while not clear_data and tries_cur < self.tries_max:
+            clear_data = self.get_data_from_wb()
+            tries_cur += 1
+
+        # Если данные так и не забрали, пишем об этом. Иначе идет обработка данных и запись их в БД
+        print(f'Попыток: {tries_cur}')
+        if not clear_data:
+            raise ValueError(f'Не получилось получить данные (больше {self.tries_max} попыток)')
+        else:
+            self.insert_data_count_feedbacks(clear_data)
 

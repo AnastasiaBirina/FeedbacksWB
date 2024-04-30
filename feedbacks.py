@@ -5,8 +5,8 @@ import requests
 import json
 import psycopg2
 from datetime import date, timedelta
-from soup2dict import convert
-from bs4 import BeautifulSoup
+# from soup2dict import convert
+from bs4 import BeautifulSoup, NavigableString
 
 # VARIABLE DEFINITION
 query = 'Наклейки для творчества'
@@ -16,6 +16,12 @@ url = 'https://search.wb.ru/exactmatch/ru/common/v4/search?TestGroup=no_test&Tes
 # class db_execution():
 #     def __init__():
 #         pass
+
+
+
+
+
+
 def delete_data(conn, cursor, dbname):
     try:
         cursor.execute(
@@ -32,7 +38,7 @@ def delete_data(conn, cursor, dbname):
         print(f"Данные {dbname} за {date.today()} не удалены, ошибка: {err=}, {type(err)=}")
 
 def insert_data_count_feedbacks(clear_data):
-    conn = psycopg2.connect(dbname="postgres", user="postgres", password="password", host="127.0.0.1")
+    conn = psycopg2.connect(dbname="airflow", user="airflow", password="airflow", host="127.0.0.1")
     cursor = conn.cursor()
 
     # Удаление данных за сегодня на всякий случай
@@ -61,7 +67,7 @@ def insert_data_count_feedbacks(clear_data):
 
 
 def insert_data_dynamic_feedbacks():
-    conn = psycopg2.connect(dbname="postgres", user="postgres", password="password", host="127.0.0.1")
+    conn = psycopg2.connect(dbname="airflow", user="airflow", password="airflow", host="127.0.0.1")
     cursor = conn.cursor()
 
     # Удаление данных за сегодня на всякий случай
@@ -115,13 +121,26 @@ def main():
         insert_data_count_feedbacks(clear_data)
         insert_data_dynamic_feedbacks()
         
+def soup_to_dict(soup_obj):
+    if isinstance(soup_obj, NavigableString):
+        return str(soup_obj)
+    else:
+        result = {}
+        for tag in soup_obj.contents:
+            tag_name = tag.name
+            if tag_name is None:
+                tag_name = 'navigablestring'
+            if tag_name not in result:
+                result[tag_name] = []
+            result[tag_name].append(soup_to_dict(tag))
+        return result
 
 def get_data(request_url):
     response = requests.get(request_url)
 
     if response.status_code == 200:
         soup = BeautifulSoup(response.text, "html.parser")
-        clear_data = json.loads(convert(soup)['navigablestring'][0])['data']
+        clear_data = json.loads(soup_to_dict(soup)['navigablestring'][0])['data']
         if 'total' in clear_data.keys():
             return clear_data['products']
         else:
@@ -134,5 +153,4 @@ main()
 
 
 
-    
     
