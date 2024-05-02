@@ -1,20 +1,20 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from feedbacks_wb.raw.wb_postgres import WB_loader
-from feedbacks_wb.raw.dynamic_feedbacks import feedbacks_loader
+from feedbacks_wb.raw.dynamic_feedbacks import dynamic_feedbacks_loader
+from feedbacks_wb.raw.postgres_gcp import google_sheets_loader
 from datetime import datetime, timedelta
-
 
 from airflow import DAG
 import logging
 from airflow.models.dag import DAG
 from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.operators.python import PythonOperator
+from airflow.sensors.date_time_sensor import DateTimeSensor
 
 
 log = logging.getLogger(__name__)
 query = 'Наклейки для творчества'
 url = 'https://search.wb.ru/exactmatch/ru/common/v4/search?TestGroup=no_test&TestID=no_test&appType=1&curr=rub&dest=-1257786&query=' + query + '&resultset=catalog&sort=popular&spp=99&suppressSpellcheck=false'
-
 
 with DAG(
     dag_id="Feedbacks_WB",
@@ -34,10 +34,16 @@ with DAG(
     def insert_data_dynamic_feedbacks_task(ds):
         # ds_date = datetime.strptime(ds, '%Y-%m-%d')
         ds_date = datetime(2024, 5, 1)
-        dynamic_feedbacks = feedbacks_loader(ds_date)
+        dynamic_feedbacks = dynamic_feedbacks_loader(ds_date)
         dynamic_feedbacks.delete_data()
         dynamic_feedbacks.load_data()
 
+    def postgres_to_google_sheets_task(ds):
+        # ds_date = datetime.strptime(ds, '%Y-%m-%d')
+        ds_date = datetime(2024, 5, 1)
+        google_sheets_data = google_sheets_loader(ds_date)
+        google_sheets_data.delete_data()
+        # google_sheets_data.load_data()
 
     wb_data_to_postgres = PythonOperator(
         task_id='wb_data_to_postgres_task',
@@ -54,10 +60,17 @@ with DAG(
             "current_dag_run_date": "{{ds}}"
         }
     )
-    # insert_data_dynamic_feedbacks = PostgresOperator(
-    #     task_id="predelete_today_data",
-    #     postgres_conn_id="POSTGRES_CONNECTION",
-    #     sql='feedbacks_wb.sql.dynamic_feedbacks.sql'
-    # )
+ 
+    wait = DateTimeSensor(
+            task_id='19_05_wait', 
+            target_time='19:05:00')
 
-    wb_data_to_postgres >> insert_data_dynamic_feedbacks
+    postgres_to_google_sheets = PythonOperator(
+        task_id='postgres_to_google_sheets_task',
+        python_callable = postgres_to_google_sheets_task,
+        op_kwargs={
+            "current_dag_run_date": "{{ds}}"
+        }
+    )
+    # wb_data_to_postgres >> wait >> insert_data_dynamic_feedbacks >> 
+    postgres_to_google_sheets

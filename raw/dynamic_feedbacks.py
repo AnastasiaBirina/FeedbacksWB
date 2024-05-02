@@ -6,7 +6,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
-class feedbacks_loader():
+class dynamic_feedbacks_loader():
     def __init__(self, ds):
         self.connection = BaseHook.get_connection("POSTGRES_CONNECTION")
         self.conn = psycopg2.connect(dbname=self.connection.schema, 

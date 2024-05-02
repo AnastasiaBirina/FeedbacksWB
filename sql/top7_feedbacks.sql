@@ -1,13 +1,8 @@
-WITH today_data AS (
-    SELECT id, feedbacks
-    FROM public.count_feedbacks
-    WHERE date = %s
-),
-yesterday_data AS (
-    SELECT id, feedbacks
-    FROM public.count_feedbacks
-    WHERE date = %s)
-INSERT INTO dynamic_feedbacks (date, id, new_feedbacks)
-SELECT CURRENT_DATE, t.id, t.feedbacks - y.feedbacks AS new_feedbacks
-FROM today_data t inner join yesterday_data y using(id)
-WHERE t.feedbacks - y.feedbacks > 0;
+select date, new_feedbacks, STRING_AGG(id::varchar(50), ', ' order by id) id
+from (
+	select id, date, new_feedbacks, max(new_feedbacks) over(partition by date) as new_feedbacks_max
+	from public.dynamic_feedbacks
+	where date >= NOW() - INTERVAL '7 DAY')
+where new_feedbacks = new_feedbacks_max
+group by date, new_feedbacks
+order by date
