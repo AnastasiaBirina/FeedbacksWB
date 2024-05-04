@@ -5,6 +5,7 @@ from datetime import date, timedelta
 # from soup2dict import convert
 from airflow.hooks.base import BaseHook 
 from bs4 import BeautifulSoup, NavigableString
+from soup2dict import convert
 
 class WB_loader():
     """
@@ -41,7 +42,7 @@ class WB_loader():
             print(f'Данные public.count_feedbacks за {self.ds} успешно удалены')
         except Exception as err:
             self.conn.rollback()
-            print(f"Данные public.count_feedbacks за {self.ds} не удалены, ошибка: {err=}, {type(err)=}")
+            log.info(f"Данные public.count_feedbacks за {self.ds} не удалены, ошибка: {err=}, {type(err)=}")
     
     def insert_data_count_feedbacks(self, clear_data):
         """
@@ -51,6 +52,7 @@ class WB_loader():
         """ 
         # Запись данных за сегодня
         for product in clear_data:
+            log.info(str(product["id"]) + "  ~~  " + str(self.ds))
             self.cursor.execute(
                 """
                 INSERT INTO count_feedbacks (date, id, salePriceU, feedbacks)
@@ -59,35 +61,15 @@ class WB_loader():
                 (self.ds, product["id"], product["priceU"], product["feedbacks"])
             )
             
-        # выполняем транзакцию
         try:
             self.conn.commit() 
-            print(f'Данные count_feedbacks за {self.ds} успешно загружены')
+            log.info(f'Данные count_feedbacks за {self.ds} успешно загружены')
         except Exception as err:
             self.conn.rollback() 
-            print(f"Данные count_feedbacks за {self.ds} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
+            log.info(f"Данные count_feedbacks за {self.ds} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
         
         self.cursor.close()
         self.conn.close()  
-
-    def soup_to_dict(self, soup_obj):
-        """
-        Преобразование soup_obj в python словарь
-        Аргументы: 
-            - (soup_obj) объект BeautifulSoup, который будет преобразован в словарь
-        """ 
-        if isinstance(soup_obj, NavigableString):
-            return str(soup_obj)
-        else:
-            result = {}
-            for tag in soup_obj.contents:
-                tag_name = tag.name
-                if tag_name is None:
-                    tag_name = 'navigablestring'
-                if tag_name not in result:
-                    result[tag_name] = []
-                result[tag_name].append(self.soup_to_dict(tag))
-            return result
 
     def get_data_from_wb(self):
         """
@@ -98,13 +80,13 @@ class WB_loader():
         response = requests.get(self.url)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
-            clear_data = json.loads(self.soup_to_dict(soup)['navigablestring'][0])['data']
+            clear_data = json.loads(convert(soup)['navigablestring'][0])['data']
             if 'total' in clear_data.keys():
                 return clear_data['products']
             else:
                 return False
         else:
-            print(f'Ошибка: {response.status_code} - {response.text}') 
+            log.info(f'Ошибка: {response.status_code} - {response.text}') 
             return False 
                 
     def wb_postgres_loader(self):
@@ -120,9 +102,9 @@ class WB_loader():
             tries_cur += 1
 
         # Если данные так и не забрали, пишем об этом. Иначе идет обработка данных и запись их в БД
-        print(f'Попыток: {tries_cur}')
+        log.info(f'Попыток: {tries_cur}')
         if not clear_data:
             raise ValueError(f'Не получилось получить данные (больше {self.tries_max} попыток)')
         else:
-            self.insert_data_count_feedbacks(clear_data)
+            return clear_data
 

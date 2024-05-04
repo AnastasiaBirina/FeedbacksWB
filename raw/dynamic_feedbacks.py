@@ -7,6 +7,11 @@ import logging
 log = logging.getLogger(__name__)
 
 class dynamic_feedbacks_loader():
+    """
+    Ежедневная запись количества новых отзывов, полученное за сутки по каждому артикулу, в таблицу dynamic_feedbacks
+    Аргументы: 
+        - (ds) дата запуска таски
+    """    
     def __init__(self, ds):
         self.connection = BaseHook.get_connection("POSTGRES_CONNECTION")
         self.conn = psycopg2.connect(dbname=self.connection.schema, 
@@ -17,6 +22,10 @@ class dynamic_feedbacks_loader():
         self.ds = ds
   
     def delete_data(self):
+        """
+        Удаление данных из public.dynamic_feedbacks в случае, 
+        если запускаем таску на конкретную дату повторно
+        """ 
         try:
             self.cursor.execute(
                 f"""
@@ -26,38 +35,25 @@ class dynamic_feedbacks_loader():
                 (self.ds,)
             )
             self.conn.commit()
-            print(f'Данные public.dynamic_feedbacks за {self.ds} успешно удалены')
+            log.info(f'Данные public.dynamic_feedbacks за {self.ds} успешно удалены')
         except Exception as err:
             self.conn.rollback()
-            print(f"Данные public.dynamic_feedbacks за {self.ds} не удалены, ошибка: {err=}, {type(err)=}")
+            log.info(f"Данные public.dynamic_feedbacks за {self.ds} не удалены, ошибка: {err=}, {type(err)=}")
             
     def load_data(self):
-        self.cursor.execute(
-            """
-            with today_data AS (
-                SELECT id, feedbacks
-                FROM public.count_feedbacks
-                WHERE date = %s
-            ),
-            yesterday_data AS (
-                SELECT id, feedbacks
-                FROM public.count_feedbacks
-                WHERE date = %s)
-            INSERT INTO dynamic_feedbacks (date, id, new_feedbacks)
-            SELECT CURRENT_DATE, t.id, t.feedbacks - y.feedbacks AS new_feedbacks
-            FROM today_data t inner join yesterday_data y using(id)
-            WHERE t.feedbacks - y.feedbacks > 0;
-            """,
-            (self.ds, self.ds - timedelta(days=1))
-        )  
-            
-        # выполняем транзакцию
+        """
+        Запись данных в таблицу public.dynamic_feedbacks
+        """ 
+        with open('dags/feedbacks_wb/sql/dynamic_feedbacks.sql', 'r') as f:
+            query = f.read()
+
         try:
+            self.cursor.execute(query, (self.ds, self.ds - timedelta(days=1)))
             self.conn.commit() 
-            print(f'Данные public.dynamic_feedbacks за {self.ds} успешно загружены')
+            log.info(f'Данные public.dynamic_feedbacks за {self.ds} успешно загружены')
         except Exception as err:
             self.conn.rollback() 
-            print(f"Данные public.dynamic_feedbacks за {self.ds} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
+            log.info(f"Данные public.dynamic_feedbacks за {self.ds} не загружены, ошибка на этапе транзакции: {err=}, {type(err)=}")
         
         self.cursor.close()
         self.conn.close() 
